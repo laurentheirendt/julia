@@ -49,7 +49,7 @@ end
 # Default value of kw arg max_parallel is the default value of MaxStartups in sshd_config
 # A machine is either a <hostname> or a tuple of (<hostname>, count)
 """
-    addprocs(machines; tunnel=false, sshflags=\`\`, max_parallel=10, kwargs...) -> List of process identifiers
+    addprocs(machines; tunnel=false, sshcmd=\`ssh\`, sshflags=\`\`, max_parallel=10, kwargs...) -> List of process identifiers
 
 Add processes on remote machines via SSH. Requires `julia` to be installed in the same
 location on each node, or to be available via a shared file system.
@@ -69,6 +69,9 @@ Keyword arguments:
 
 * `tunnel`: if `true` then SSH tunneling will be used to connect to the worker from the
             master process. Default is `false`.
+
+* `sshcmd`: specifies a different (ssh-compatible) connector, e.g.
+  ```sshcmd=\`oarsh\` ```
 
 * `sshflags`: specifies additional ssh options, e.g.
   ```sshflags=\`-i /home/foo/bar.pem\` ```
@@ -110,9 +113,9 @@ This timeout can be controlled via environment variable `JULIA_WORKER_TIMEOUT`.
 The value of `JULIA_WORKER_TIMEOUT` on the master process specifies the number of seconds a
 newly launched worker waits for connection establishment.
 """
-function addprocs(machines::AbstractVector; tunnel=false, sshflags=``, max_parallel=10, kwargs...)
+function addprocs(machines::AbstractVector; tunnel=false, sshcmd=`ssh`, sshflags=``, max_parallel=10, kwargs...)
     check_addprocs_args(kwargs)
-    addprocs(SSHManager(machines); tunnel=tunnel, sshflags=sshflags, max_parallel=max_parallel, kwargs...)
+    addprocs(SSHManager(machines); tunnel=tunnel, sshcmd=sshcmd, sshflags=sshflags, max_parallel=max_parallel, kwargs...)
 end
 
 
@@ -174,6 +177,7 @@ function launch_on_machine(manager::SSHManager, machine, cnt, params, launched, 
         portopt = ` -p $(machine_def[2]) `
     end
     sshflags = `$(params[:sshflags]) $portopt`
+    sshcmd = params[:sshcmd]
 
     # Build up the ssh command
 
@@ -195,7 +199,7 @@ function launch_on_machine(manager::SSHManager, machine, cnt, params, launched, 
     #                          forwarded connections are causing collisions
     # -n → Redirects stdin from /dev/null (actually, prevents reading from stdin).
     #      Used when running ssh in the background.
-    cmd = `ssh -T -a -x -o ClearAllForwardings=yes -n $sshflags $host $(shell_escape(cmd))`
+    cmd = `$sshcmd -T -a -x -o ClearAllForwardings=yes -n $sshflags $host $(shell_escape(cmd))`
 
     # launch the remote Julia process
 
@@ -208,6 +212,7 @@ function launch_on_machine(manager::SSHManager, machine, cnt, params, launched, 
     wconfig.io = io
     wconfig.host = host
     wconfig.tunnel = params[:tunnel]
+    wconfig.sshcmd = sshcmd
     wconfig.sshflags = sshflags
     wconfig.exeflags = exeflags
     wconfig.exename = exename
@@ -226,8 +231,9 @@ function manage(manager::SSHManager, id::Integer, config::WorkerConfig, op::Symb
         ospid = get(config.ospid, 0)
         if ospid > 0
             host = get(config.host)
+            sshcmd = get(config.sshcmd)
             sshflags = get(config.sshflags)
-            if !success(`ssh -T -a -x -o ClearAllForwardings=yes -n $sshflags $host "kill -2 $ospid"`)
+            if !success(`$sshcmd -T -a -x -o ClearAllForwardings=yes -n $sshflags $host "kill -2 $ospid"`)
                 warn(STDERR,"error sending a Ctrl-C to julia worker $id on $host")
             end
         else
@@ -252,12 +258,12 @@ end
 
 
 """
-    ssh_tunnel(user, host, bind_addr, port, sshflags) -> localport
+    ssh_tunnel(user, host, bind_addr, port, sshcmd, sshflags) -> localport
 
 Establish an SSH tunnel to a remote worker.
 Returns a port number `localport` such that `localhost:localport` connects to `host:port`.
 """
-function ssh_tunnel(user, host, bind_addr, port, sshflags)
+function ssh_tunnel(user, host, bind_addr, port, sshcmd, sshflags)
     port = Int(port)
     cnt  = 100
     localport = next_tunnel_port()
@@ -268,7 +274,7 @@ function ssh_tunnel(user, host, bind_addr, port, sshflags)
     # remote julia process and establish the network connections specified by the process topology.
     # If no connections are made within 60 seconds, ssh will exit and an error will be printed on the
     # process that launched the remote process.
-    ssh = `ssh -T -a -x -o ExitOnForwardFailure=yes`
+    ssh = `$sshcmd -T -a -x -o ExitOnForwardFailure=yes`
     while !success(detach(`$ssh -f $sshflags $user@$host -L $localport:$bind_addr:$port sleep 60`)) && cnt > 0
         localport = next_tunnel_port()
         cnt -= 1
@@ -421,10 +427,11 @@ function connect(manager::ClusterManager, pid::Int, config::WorkerConfig)
         end
         sem = tunnel_hosts_map[pubhost]
 
+        sshcmd = get(config.sshcmd)
         sshflags = get(config.sshflags)
         acquire(sem)
         try
-            (s, bind_addr) = connect_to_worker(pubhost, bind_addr, port, user, sshflags)
+            (s, bind_addr) = connect_to_worker(pubhost, bind_addr, port, user, sshcmd, sshflags)
         finally
             release(sem)
         end
@@ -501,8 +508,8 @@ function connect_to_worker(host::AbstractString, port::Integer)
 end
 
 
-function connect_to_worker(host::AbstractString, bind_addr::AbstractString, port::Integer, tunnel_user::AbstractString, sshflags)
-    s = connect("localhost", ssh_tunnel(tunnel_user, host, bind_addr, UInt16(port), sshflags))
+function connect_to_worker(host::AbstractString, bind_addr::AbstractString, port::Integer, tunnel_user::AbstractString, sshcmd, sshflags)
+    s = connect("localhost", ssh_tunnel(tunnel_user, host, bind_addr, UInt16(port), sshcmd, sshflags))
     (s, bind_addr)
 end
 
