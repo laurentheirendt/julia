@@ -169,6 +169,7 @@ type WorkerConfig
     userdata::Nullable{Any}
 
     # SSHManager / SSH tunnel connections to workers
+    sshcmd::Nullable{Cmd}
     tunnel::Nullable{Bool}
     bind_addr::Nullable{AbstractString}
     sshflags::Nullable{Cmd}
@@ -1762,7 +1763,7 @@ function launch_n_additional_processes(manager, frompid, fromconfig, cnt, launch
             (bind_addr, port) = address
 
             wconfig = WorkerConfig()
-            for x in [:host, :tunnel, :sshflags, :exeflags, :exename, :enable_threaded_blas]
+            for x in [:host, :tunnel, :sshcmd, :sshflags, :exeflags, :exename, :enable_threaded_blas]
                 setfield!(wconfig, x, getfield(fromconfig, x))
             end
             wconfig.bind_addr = bind_addr
